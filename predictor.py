@@ -53,17 +53,28 @@ df["QualiNorm"] = df.groupby("Year")["QualiTime_s"].transform(
     lambda x: (x - x.min()) / (x.max() - x.min())
 )
 
-# 4c. Canada circuit history per driver
+# 4c. Canada circuit history — prior years only (no leakage)
+records = []
+for _, row in df.iterrows():
+    prior = df[(df["Driver"] == row["Driver"]) & (df["Year"] < row["Year"])]
+    records.append({
+        "Driver":       row["Driver"],
+        "Year":         row["Year"],
+        "CanadaAvgPos": prior["Position"].mean() if len(prior) > 0 else np.nan,
+        "CanadaBestPos":prior["Position"].min()  if len(prior) > 0 else np.nan,
+        "CanadaRaces":  len(prior),
+    })
+prior_hist = pd.DataFrame(records)
+df = df.merge(prior_hist, on=["Driver","Year"], how="left")
+df["CanadaAvgPos"]  = df["CanadaAvgPos"].fillna(12.0)
+df["CanadaBestPos"] = df["CanadaBestPos"].fillna(12.0)
+
+# Full history kept separately for 2026 prediction only
 canada_hist = (
     df.groupby("Driver")
-    .agg(
-        CanadaAvgPos  = ("Position", "mean"),
-        CanadaBestPos = ("Position", "min"),
-        CanadaRaces   = ("Year",     "count")
-    )
+    .agg(CanadaAvgPos=("Position","mean"), CanadaBestPos=("Position","min"), CanadaRaces=("Year","count"))
     .reset_index()
 )
-df = df.merge(canada_hist, on="Driver", how="left")
 
 # 4d. 2026 standings
 standings_2026 = {
@@ -103,7 +114,10 @@ gb_model = GradientBoostingRegressor(
     random_state=42
 )
 gb_model.fit(X, y)
-gb_scores = cross_val_score(gb_model, X, y, cv=3, scoring="neg_mean_absolute_error")
+from sklearn.model_selection import LeaveOneGroupOut
+logo = LeaveOneGroupOut()
+groups = df_clean["Year"].values
+gb_scores = cross_val_score(gb_model, X, y, cv=logo, groups=groups, scoring="neg_mean_absolute_error")
 print(f" Gradient Boosting — MAE: {-gb_scores.mean():.2f} positions (±{gb_scores.std():.2f})")
 
 # Model 2: Random Forest
@@ -112,7 +126,7 @@ rf_model = RandomForestRegressor(
     random_state=42
 )
 rf_model.fit(X, y)
-rf_scores = cross_val_score(rf_model, X, y, cv=3, scoring="neg_mean_absolute_error")
+rf_scores = cross_val_score(rf_model, X, y, cv=logo, groups=groups, scoring="neg_mean_absolute_error")
 print(f" Random Forest     — MAE: {-rf_scores.mean():.2f} positions (±{rf_scores.std():.2f})")
 
 # ── Feature importance (from Gradient Boosting)
@@ -150,10 +164,9 @@ grid_2026["CanadaBestPos"] = grid_2026["CanadaBestPos"].fillna(12.0)
 grid_2026["Form2026"] = grid_2026["Driver"].map(standings_2026)
 grid_2026["Form2026"] = grid_2026["Form2026"].fillna(15)
 
-# Normalizing qualifying — use grid position as proxy until real quali times
-qt_min = grid_2026["GridPosition"].min()
-qt_max = grid_2026["GridPosition"].max()
-grid_2026["QualiNorm"] = (grid_2026["GridPosition"] - qt_min) / (qt_max - qt_min)
+# QualiNorm unknown pre-qualifying — use neutral 0.5 for all drivers
+# UPDATE AFTER MAY 24: map real Q3 lap times here and normalize them
+grid_2026["QualiNorm"] = 0.5
 
 # Predicting with both models
 X_pred = grid_2026[FEATURES].values
