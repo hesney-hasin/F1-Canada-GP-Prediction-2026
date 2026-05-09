@@ -138,52 +138,67 @@ for feat, imp in sorted(zip(FEATURES, gb_model.feature_importances_),
     
 # STEP 6: Predicting 2026 Canada GP
 
-# 2026 Canada grid — update this AFTER qualifying on May 22!
-# For now using current 2026 standings order as estimated grid
-grid_2026 = pd.DataFrame({
-    "Driver": ["ANT","RUS","LEC","NOR","HAM","PIA","VER","BEA","GAS","LAW",
-               "COL","LIN","HAD","SAI","BOR","OCO","ALB","HUL","BOT","PER","ALO","STR"],
-    "GridPosition": list(range(1, 23)),
-    "TeamName": [
-        "Mercedes","Mercedes","Ferrari","McLaren","Ferrari","McLaren",
-        "Red Bull Racing","Haas F1 Team","Alpine","Racing Bulls",
-        "Alpine","Racing Bulls","Red Bull Racing","Williams","Audi",
-        "Haas F1 Team","Williams","Audi","Cadillac","Cadillac",
-        "Aston Martin","Aston Martin"
-    ]
-})
+QUALI_MODE = "pre"
 
-# Adding Canada history for 2026 drivers
-grid_2026 = grid_2026.merge(canada_hist, on="Driver", how="left")
+# Full 2022–2025 history for 2026 prediction
+canada_hist_full = (
+    df.groupby("Driver")
+    .agg(CanadaAvgPos=("Position","mean"), CanadaBestPos=("Position","min"), CanadaRaces=("Year","count"))
+    .reset_index()
+)
 
-# Filling drivers with no Canada history 
+if QUALI_MODE == "post":
+    print("  Fetching 2026 Canada qualifying session...")
+    quali_live = fastf1.get_session(2026, "Canada", "Q")
+    quali_live.load(laps=True, telemetry=False, weather=False, messages=False)
+    best_q = (
+        quali_live.laps.pick_quicklaps()
+        .groupby("Driver")["LapTime"].min()
+        .reset_index()
+        .rename(columns={"LapTime": "BestQualiTime"})
+    )
+    best_q["QualiTime_s"] = best_q["BestQualiTime"].dt.total_seconds()
+    grid_2026 = quali_live.results[["Abbreviation","GridPosition","TeamName"]].copy()
+    grid_2026 = grid_2026.rename(columns={"Abbreviation":"Driver"})
+    grid_2026["GridPosition"] = pd.to_numeric(grid_2026["GridPosition"], errors="coerce")
+    grid_2026 = grid_2026.merge(best_q[["Driver","QualiTime_s"]], on="Driver", how="left")
+    qt_min = grid_2026["QualiTime_s"].min()
+    qt_max = grid_2026["QualiTime_s"].max()
+    grid_2026["QualiNorm"] = (grid_2026["QualiTime_s"] - qt_min) / (qt_max - qt_min)
+    mode_label = "POST-QUALIFYING ✅ (real Q3 lap times)"
+
+else:
+    grid_2026 = pd.DataFrame({
+        "Driver": ["ANT","RUS","LEC","NOR","HAM","PIA","VER","BEA","GAS","LAW",
+                   "COL","LIN","HAD","SAI","BOR","OCO","ALB","HUL","BOT","PER","ALO","STR"],
+        "GridPosition": list(range(1, 23)),
+        "TeamName": [
+            "Mercedes","Mercedes","Ferrari","McLaren","Ferrari","McLaren",
+            "Red Bull Racing","Haas F1 Team","Alpine","Racing Bulls",
+            "Alpine","Racing Bulls","Red Bull Racing","Williams","Audi",
+            "Haas F1 Team","Williams","Audi","Cadillac","Cadillac",
+            "Aston Martin","Aston Martin"
+        ]
+    })
+    grid_2026["QualiNorm"] = 0.5
+    mode_label = "PRE-QUALIFYING ⏳ (estimated grid)"
+
+grid_2026 = grid_2026.merge(canada_hist_full, on="Driver", how="left")
 grid_2026["CanadaAvgPos"]  = grid_2026["CanadaAvgPos"].fillna(12.0)
 grid_2026["CanadaBestPos"] = grid_2026["CanadaBestPos"].fillna(12.0)
+grid_2026["Form2026"]      = grid_2026["Driver"].map(standings_2026).fillna(15)
 
-# Adding 2026 standings form
-grid_2026["Form2026"] = grid_2026["Driver"].map(standings_2026)
-grid_2026["Form2026"] = grid_2026["Form2026"].fillna(15)
-
-# QualiNorm unknown pre-qualifying — use neutral 0.5 for all drivers
-# UPDATE AFTER MAY 24: map real Q3 lap times here and normalize them
-grid_2026["QualiNorm"] = 0.5
-
-# Predicting with both models
 X_pred = grid_2026[FEATURES].values
-
-grid_2026["GB_Pred"] = gb_model.predict(X_pred)
-grid_2026["RF_Pred"] = rf_model.predict(X_pred)
-
-# Ensemble: 60% GB + 40% RF
+grid_2026["GB_Pred"]  = gb_model.predict(X_pred)
+grid_2026["RF_Pred"]  = rf_model.predict(X_pred)
 grid_2026["Ensemble"] = grid_2026["GB_Pred"] * 0.6 + grid_2026["RF_Pred"] * 0.4
 
-# Rank by ensemble score
 grid_2026 = grid_2026.sort_values("Ensemble").reset_index(drop=True)
 grid_2026["PredictedPos"] = range(1, len(grid_2026) + 1)
 
-# Printing results
 print("\n" + "=" * 55)
 print("  🏁  PREDICTED 2026 CANADA GP RESULT")
+print(f"  {mode_label}")
 print("=" * 55)
 print(f"  {'Pos':<4} {'Driver':<6} {'Team':<22} {'Score'}")
 print("  " + "-" * 45)
@@ -195,4 +210,5 @@ for _, row in grid_2026.head(10).iterrows():
     print(f"  {icon}  {row['Driver']:<6} {str(row['TeamName']):<22} {row['Ensemble']:.2f}")
 
 print("=" * 55)
+
 
