@@ -138,7 +138,7 @@ for feat, imp in sorted(zip(FEATURES, gb_model.feature_importances_),
     
 # STEP 6: Predicting 2026 Canada GP
 
-QUALI_MODE = "pre"
+QUALI_MODE = "post"
 
 # Full 2022–2025 history for 2026 prediction
 canada_hist_full = (
@@ -158,14 +158,19 @@ if QUALI_MODE == "post":
         .rename(columns={"LapTime": "BestQualiTime"})
     )
     best_q["QualiTime_s"] = best_q["BestQualiTime"].dt.total_seconds()
-    grid_2026 = quali_live.results[["Abbreviation","GridPosition","TeamName"]].copy()
+    grid_2026 = quali_live.results[["Abbreviation","TeamName"]].copy()
     grid_2026 = grid_2026.rename(columns={"Abbreviation":"Driver"})
-    grid_2026["GridPosition"] = pd.to_numeric(grid_2026["GridPosition"], errors="coerce")
     grid_2026 = grid_2026.merge(best_q[["Driver","QualiTime_s"]], on="Driver", how="left")
+
+    # ── ADD HERE ──────────────────────────────────────────────
+    grid_2026["GridPosition"] = grid_2026["QualiTime_s"].rank(method="first").astype(float)
+    grid_2026["GridPosition"] = grid_2026["GridPosition"].fillna(float(len(grid_2026)))
+    # ──────────────────────────────────────────────────────────
+
     qt_min = grid_2026["QualiTime_s"].min()
     qt_max = grid_2026["QualiTime_s"].max()
     grid_2026["QualiNorm"] = (grid_2026["QualiTime_s"] - qt_min) / (qt_max - qt_min)
-    mode_label = "POST-QUALIFYING ✅ (real Q3 lap times)"
+    mode_label = "POST-QUALIFYING (real Q3 lap times)"
 
 else:
     grid_2026 = pd.DataFrame({
@@ -189,13 +194,12 @@ grid_2026["CanadaBestPos"] = grid_2026["CanadaBestPos"].fillna(12.0)
 grid_2026["Form2026"]      = grid_2026["Driver"].map(standings_2026).fillna(15)
 
 X_pred = grid_2026[FEATURES].values
+
 grid_2026["GB_Pred"]  = gb_model.predict(X_pred)
 grid_2026["RF_Pred"]  = rf_model.predict(X_pred)
 grid_2026["Ensemble"] = grid_2026["GB_Pred"] * 0.6 + grid_2026["RF_Pred"] * 0.4
-
 grid_2026 = grid_2026.sort_values("Ensemble").reset_index(drop=True)
 grid_2026["PredictedPos"] = range(1, len(grid_2026) + 1)
-
 print("\n" + "=" * 55)
 print("  🏁  PREDICTED 2026 CANADA GP RESULT")
 print(f"  {mode_label}")
@@ -210,5 +214,3 @@ for _, row in grid_2026.head(10).iterrows():
     print(f"  {icon}  {row['Driver']:<6} {str(row['TeamName']):<22} {row['Ensemble']:.2f}")
 
 print("=" * 55)
-
-
